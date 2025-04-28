@@ -12,7 +12,6 @@ from concurrent.futures import ThreadPoolExecutor
 import asyncpg
 import discord
 import pytz
-import openai
 import httpx
 import requests
 import redis.asyncio as redis
@@ -21,6 +20,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings
+from openai import AsyncOpenAI
 
 # 🔹 Local Modules
 from modules.features.oil_price import get_oil_price_today
@@ -61,7 +61,7 @@ CHANNEL_ID = 1350812185001066538
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="$", intents=intents)
-openai.api_key = settings.OPENAI_API_KEY
+openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 redis_instance = None
 
 async def setup_connection():
@@ -138,7 +138,7 @@ async def should_search(question: str) -> bool:
 ตอบ:
 """.strip()
 
-    response = await openai.ChatCompletion.acreate(
+    response = await openai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
@@ -191,7 +191,7 @@ async def generate_reply(user_id: int, text: str) -> str:
         initial_limit=4
     )
 
-    response = await openai.ChatCompletion.acreate(
+    response = await openai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
         temperature=0.5,
