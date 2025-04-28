@@ -1,24 +1,6 @@
 import re
 from typing import Optional
 
-search_tool = {
-    "type": "function",
-    "function": {
-        "name": "search_google",
-        "description": "ค้นหาข้อมูลจาก Google",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "คำค้นหาที่ต้องการค้นจาก Google"
-                }
-            },
-            "required": ["query"]
-        }
-    }
-}
-
 def preserve_blocks(raw: str) -> tuple[str, dict]:
     code_blocks = {}
 
@@ -38,41 +20,42 @@ def restore_blocks(text: str, blocks: dict) -> str:
         text = text.replace(key, value)
     return text
 
+def is_list_item(line: str) -> bool:
+    """เช็คว่าบรรทัดนี้น่าจะเป็น bullet หรือหัวข้อ list หรือเปล่า"""
+    list_item_pattern = re.compile(r'^\s*(•|-|\d+\.)\s+')
+    return bool(list_item_pattern.match(line.strip()))
+
 def clean_output_text(text: str) -> str:
     text, saved_blocks = preserve_blocks(text)
 
-    # ✅ เชื่อมเลขข้อกับข้อความที่โดนเว้นบรรทัด
+    # ✅ ตอนต้น: เชื่อมเลขข้อกับข้อความ
     text = re.sub(r'(?m)^(\d+)\.\s*\n+(\S)', r'\1. \2', text)
-    text = re.sub(r'(?m)^(\d+)\.\s*$', r'\1.\n', text)
 
-    # ✅ ลบช่องว่างท้ายบรรทัด
+    # ✅ ลบช่องว่างแปลก ๆ
     text = re.sub(r'[ \t]+\n', '\n', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
 
-    # ✅ Headings เช่น ### หัวข้อ → **หัวข้อ**
+    # ✅ แปลง heading เช่น ### หัวข้อ → **หัวข้อ**
     text = re.sub(r'^#{2,6}\s*(.+)', r'**\1**', text, flags=re.MULTILINE)
 
-    # ✅ Bullet point: *, -, • → • 
+    # ✅ bullet: *, -, • → •
     text = re.sub(r'(?m)^[\*\-\u2022]\s+', '• ', text)
 
-    # ✅ ลบ * หรือ ** เดี่ยว ๆ ที่พัง
+    # ✅ ลบ * เดี่ยว ๆ ที่ markdown พัง
     text = re.sub(r'(?<!\*)\*(?!\*)', '', text)
     text = re.sub(r'\*\*(\s|$)', r'\1', text)
     text = re.sub(r'(^|\s)\*\*(?=\s)', r'\1', text)
 
-    # ✅ แก้ลิงก์ markdown → text <url>
-    text = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'\1 <\2>', text)
+    # ✅ ลิงก์ markdown: [text](url) → text <url>
+    text = re.sub(r'$begin:math:display$([^$end:math:display$]+)\]$begin:math:text$(https?://[^$end:math:text$]+)\)', r'\1 <\2>', text)
     text = re.sub(r'(?<!<)(https?://\S+)(?!>)', r'<\1>', text)
 
-    # ✅ ตัดบรรทัดไม่ให้ตัดมั่ว
+    # ✅ ป้องกันการตัดบรรทัดมั่ว
     safe_starts = r'[\-\*\u2022#>\|0-9]|<:|:.*?:'
     safe_ends = r'[A-Za-z0-9ก-๙\.\!\?\)]'
     text = re.sub(fr'(?<!{safe_ends})\n(?!{safe_starts}|\n)', ' ', text)
 
-    # ✅ เว้นบรรทัดหลังหัวข้อ 1. 2. 3. แต่ไม่เว้น 2.5, 3.14
-    text = re.sub(r'(?<=\n)(\d+)\.\s+(?=[^\d\s])', r'\1.\n\n', text)
-
-    # ✅ แบ่งย่อหน้า (~40 คำ)
+    # ✅ แบ่งข้อความใหม่ (~40 คำต่อย่อหน้า)
     sentences = re.split(r'(?<=[.!?])\s+', text)
     new_text, current_length = '', 0
     for sentence in sentences:
@@ -84,28 +67,36 @@ def clean_output_text(text: str) -> str:
             new_text += sentence.strip() + " "
             current_length += sentence_length
 
+    # ✅ คืน block กลับก่อน
     text = restore_blocks(new_text, saved_blocks)
+
+    # ✅ เชื่อมเลขข้อหลัง restore อีกที
     text = re.sub(r'(?m)^(\d+)\.\s*\n+(\S)', r'\1. \2', text)
 
-    # ✅ เว้นบรรทัดหลังรายการ bullet (•)
+    # ✅ จัดรูปแบบ list ให้ไม่มั่ว
     lines = text.splitlines()
-    final_lines = []
+    new_lines = []
     inside_list = False
 
     for line in lines:
         stripped = line.strip()
-        if re.match(r'^\d+\.', stripped) or stripped.startswith('•'):
-            inside_list = True
-            final_lines.append(stripped)
+
+        if is_list_item(stripped):
+            if inside_list:
+                new_lines.append(stripped)
+            else:
+                inside_list = True
+                new_lines.append(stripped)
         elif stripped:
             if inside_list:
-                final_lines.append('')
+                # จบ list → เว้นบรรทัด
+                new_lines.append('')
                 inside_list = False
-            final_lines.append(stripped)
+            new_lines.append(stripped)
         else:
-            final_lines.append('')
+            new_lines.append('')
 
-    return '\n'.join(final_lines).strip()
+    return '\n'.join(new_lines).strip()
 
 def clean_url(url: Optional[str]) -> str:
     if not isinstance(url, str):
