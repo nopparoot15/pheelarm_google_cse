@@ -26,8 +26,8 @@ async def build_chat_context_smart(
     *,
     system_prompt: str,
     model: str = "gpt-4o-mini",
-    max_tokens_context: int = 1000,
-    initial_limit: int = 6,
+    max_tokens_context: int = 400,
+    initial_limit: int = 4,
 ) -> List[dict]:
     messages = [{"role": "system", "content": system_prompt}]
     history = await get_chat_history(redis_instance, user_id, limit=initial_limit)
