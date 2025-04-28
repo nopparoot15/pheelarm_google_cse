@@ -1,0 +1,17 @@
+discord.py
+openai
+asyncpg
+redis
+httpx
+requests
+python-dotenv
+logging
+setuptools
+pydantic-settings
+pytz
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+beautifulsoup4
+lxml
+tiktoken>=0.5.2
