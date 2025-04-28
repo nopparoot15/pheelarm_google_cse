@@ -21,15 +21,12 @@ def restore_blocks(text: str, blocks: dict) -> str:
     return text
 
 def is_list_item(line: str) -> bool:
-    """เช็คว่าบรรทัดนี้น่าจะเป็น bullet หรือหัวข้อ list หรือเปล่า"""
+    """เช็คว่าบรรทัดนี้เป็น bullet หรือหัวข้อ list หรือไม่"""
     list_item_pattern = re.compile(r'^\s*(•|-|\d+\.)\s+')
     return bool(list_item_pattern.match(line.strip()))
 
 def clean_output_text(text: str) -> str:
     text, saved_blocks = preserve_blocks(text)
-
-    # ✅ ตอนต้น: เชื่อมเลขข้อกับข้อความ
-    text = re.sub(r'(?m)^(\d+)\.\s*\n+(\S)', r'\1. \2', text)
 
     # ✅ ลบช่องว่างแปลก ๆ
     text = re.sub(r'[ \t]+\n', '\n', text)
@@ -41,7 +38,7 @@ def clean_output_text(text: str) -> str:
     # ✅ bullet: *, -, • → •
     text = re.sub(r'(?m)^[\*\-\u2022]\s+', '• ', text)
 
-    # ✅ ลบ * เดี่ยว ๆ ที่ markdown พัง
+    # ✅ ลบ * หรือ ** เดี่ยว ๆ ที่ markdown พัง
     text = re.sub(r'(?<!\*)\*(?!\*)', '', text)
     text = re.sub(r'\*\*(\s|$)', r'\1', text)
     text = re.sub(r'(^|\s)\*\*(?=\s)', r'\1', text)
@@ -55,48 +52,47 @@ def clean_output_text(text: str) -> str:
     safe_ends = r'[A-Za-z0-9ก-๙\.\!\?\)]'
     text = re.sub(fr'(?<!{safe_ends})\n(?!{safe_starts}|\n)', ' ', text)
 
-    # ✅ แบ่งข้อความใหม่ (~40 คำต่อย่อหน้า)
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    new_text, current_length = '', 0
-    for sentence in sentences:
-        sentence_length = len(sentence.split())
-        if current_length + sentence_length > 40:
-            new_text = new_text.strip() + "\n\n" + sentence.strip() + " "
-            current_length = sentence_length
-        else:
-            new_text += sentence.strip() + " "
-            current_length += sentence_length
-
-    # ✅ คืน block กลับก่อน
-    text = restore_blocks(new_text, saved_blocks)
-
-    # ✅ เชื่อมเลขข้อหลัง restore อีกที
+    # ✅ เชื่อมเลขข้อ เช่น 1. / 2. ก่อนแตก paragraph (สำคัญ!)
     text = re.sub(r'(?m)^(\d+)\.\s*\n+(\S)', r'\1. \2', text)
 
-    # ✅ จัดรูปแบบ list ให้ไม่มั่ว
+    # ✅ แบ่งข้อความใหม่ (~40 คำต่อย่อหน้า)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    new_text = ''
+    current_length = 0
+    for sentence in sentences:
+        word_count = len(sentence.split())
+        if current_length + word_count > 40:
+            new_text = new_text.strip() + "\n\n" + sentence.strip() + " "
+            current_length = word_count
+        else:
+            new_text += sentence.strip() + " "
+            current_length += word_count
+
+    # ✅ คืน block กลับ
+    text = restore_blocks(new_text.strip(), saved_blocks)
+
+    # ✅ เชื่อมเลขข้ออีกครั้งหลัง restore (กันหลุดอีก)
+    text = re.sub(r'(?m)^(\d+)\.\s*\n+(\S)', r'\1. \2', text)
+
+    # ✅ จัด list bullet ให้อัตโนมัติ
     lines = text.splitlines()
-    new_lines = []
+    final_lines = []
     inside_list = False
 
     for line in lines:
         stripped = line.strip()
-
         if is_list_item(stripped):
-            if inside_list:
-                new_lines.append(stripped)
-            else:
-                inside_list = True
-                new_lines.append(stripped)
+            inside_list = True
+            final_lines.append(stripped)
         elif stripped:
             if inside_list:
-                # จบ list → เว้นบรรทัด
-                new_lines.append('')
+                final_lines.append('')  # เว้นบรรทัดหลัง list
                 inside_list = False
-            new_lines.append(stripped)
+            final_lines.append(stripped)
         else:
-            new_lines.append('')
+            final_lines.append('')
 
-    return '\n'.join(new_lines).strip()
+    return '\n'.join(final_lines).strip()
 
 def clean_url(url: Optional[str]) -> str:
     if not isinstance(url, str):
