@@ -214,7 +214,12 @@ async def generate_reply(user_id: int, text: str) -> str:
     timezone = await redis_instance.get(f"timezone:{user_id}") or "Asia/Bangkok"
     now = datetime.now(pytz.timezone(timezone))
     system_prompt += f"\n\n⏰ timezone: {timezone}\n🕒 {format_thai_datetime(now)}"
-    system_prompt = system_prompt.strip()  # ✅ strip อีกทีหลังเติม timezone
+    system_prompt = system_prompt.strip()
+
+    # 🧠 เพิ่มการดึง context เดิม
+    previous_question = await get_previous_message(redis_instance, user_id)
+    if previous_question and not is_greeting(text):
+        text = f"จากที่ก่อนหน้านี้ถามว่า: \"{previous_question}\"\n\nตอนนี้: {text}"
 
     if await should_search(text):
         logger.info("🌐 ต้องค้นหาเว็บ")
@@ -239,7 +244,7 @@ async def generate_reply(user_id: int, text: str) -> str:
         model="gpt-4o-mini",
         temperature=0.5,
     )
-    
+
     return response.strip()
     
 @bot.event
