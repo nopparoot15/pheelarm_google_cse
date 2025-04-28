@@ -235,8 +235,8 @@ async def generate_reply(user_id: int, text: str) -> str:
         text,
         system_prompt=system_prompt,
         model="gpt-4o-mini",
-        max_tokens_context=400,
-        initial_limit=4
+        max_tokens_context=600,
+        initial_limit=6
     )
 
     response = await get_openai_response(
