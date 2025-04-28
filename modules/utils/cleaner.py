@@ -85,6 +85,7 @@ def clean_output_text(text: str) -> str:
             current_length += sentence_length
 
     text = restore_blocks(new_text, saved_blocks)
+    text = re.sub(r'(?m)^(\d+)\.\s*\n+(\S)', r'\1. \2', text)
 
     # ✅ เว้นบรรทัดหลังรายการ bullet (•)
     lines = text.splitlines()
