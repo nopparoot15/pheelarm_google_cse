@@ -66,16 +66,21 @@ async def get_openai_response(
             presence_penalty=presence_penalty,
         )
 
-        # ✅ log token usage
-        if response.usage:
+        # ✅ log token usage (ถ้ามี usage object)
+        if hasattr(response, "usage") and response.usage:
             input_tokens = response.usage.prompt_tokens
             output_tokens = response.usage.completion_tokens
             total_tokens = response.usage.total_tokens
             logger.info(f"🧮 Token Usage → Input: {input_tokens} | Output: {output_tokens} | Total: {total_tokens}")
 
-        content = response.choices[0].message.content.strip()
-        return content
+        # ✅ ดึง content ออกอย่างปลอดภัย
+        if response.choices and response.choices[0].message and response.choices[0].message.content:
+            content = response.choices[0].message.content.strip()
+            return content
+        else:
+            logger.warning("⚠️ No valid choices returned from OpenAI")
+            return "⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า"
 
     except Exception as e:
-        logger.error(f"❌ get_openai_response error: {e}")
-        return "⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า"
+        logger.error(f"❌ GPT Error: {e}")
+        return "⚠️ พี่หลามขัดข้องชั่วคราว ขออภัยด้วยครับ"
