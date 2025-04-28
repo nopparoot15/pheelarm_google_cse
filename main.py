@@ -30,22 +30,14 @@ from modules.features.exchange_rate import get_exchange_rate
 from modules.features.weather_forecast import get_weather
 from modules.features.daily_news import get_daily_news
 from modules.features.global_news import get_global_news
-from modules.features.google_search import search_google, search_image
+from modules.features.google_search import search_image
 from modules.tarot.tarot_reading import draw_cards_and_interpret_by_topic
 from modules.nlp.message_matcher import match_topic
-from modules.memory.chat_memory import store_chat, build_chat_context_smart, get_chat_history
-from modules.utils.token_counter import count_tokens
-from modules.utils.cleaner import clean_output_text, search_tool, format_response_markdown, clean_url
+from modules.memory.chat_memory import store_chat, build_chat_context_smart
+from modules.utils.cleaner import clean_output_text
 from modules.utils.thai_to_eng_city import convert_thai_to_english_city
 from modules.utils.thai_datetime import get_thai_datetime_now, format_thai_datetime
-from modules.utils.query_utils import (
-    is_greeting, is_about_bot, is_question,
-    matches_important_query, remove_force_prefix,
-    needs_web_search
-)
 from modules.core.logger import logger
-from modules.core.openai_client import client as openai_client
-from modules.utils.query_utils import get_openai_response
 
 # ✅ Load environment variables
 load_dotenv()
@@ -75,7 +67,6 @@ redis_instance = None
 async def setup_connection():
     global redis_instance
 
-    # ✅ เชื่อม Redis ก่อน
     for _ in range(3):
         try:
             redis_instance = await redis.from_url(settings.REDIS_URL, decode_responses=True)
@@ -89,7 +80,6 @@ async def setup_connection():
         logger.error("❌ Redis connection failed")
         redis_instance = None
 
-    # ✅ เชื่อม PostgreSQL ต่อถ้ามี credentials ครบ
     try:
         if settings.DATABASE_URL:
             bot.pool = await asyncpg.create_pool(settings.DATABASE_URL)
@@ -137,43 +127,77 @@ async def process_message(user_id: int, text: str) -> str:
     ).strip()
     return clean_output_text(base_prompt)
 
-async def smart_reply(message: discord.Message, content: str):
-    # ✅ เตรียมข้อความก่อน ไม่ await แทรกบ่อย
-    content = clean_output_text(content)
+async def should_search(question: str) -> bool:
+    prompt = f"""
+ประเมินคำถามนี้:
+- ถ้าตอบได้จากความรู้ทั่วไป (ไม่ต้องค้นหาเว็บ) ตอบ "no_search"
+- ถ้าต้องค้นข้อมูลล่าสุดจากเว็บ เช่น ข่าว ราคาสินค้า อากาศ ตอบ "need_search"
+อย่าตอบอย่างอื่น
 
-    # ลบ markdown แบบ [text](url) → text <url>
-    content = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'\1 <\2>', content)
+คำถาม: {question}
+ตอบ:
+""".strip()
 
-    # ลบลิงก์เปล่า ๆ ที่ยังไม่ถูกครอบ < >
-    content = re.sub(r'(?<!<)(https?://\S+)(?!>)', r'<\1>', content)
+    response = await openai.ChatCompletion.acreate(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        max_tokens=5,
+    )
 
-    # ลบ ** เดี่ยว ๆ ที่หลุดมาจาก fallback
-    content = re.sub(r'(?<!\*)\*\*(?!\*)', '', content)
+    decision = response.choices[0].message.content.strip().lower()
+    return decision == "need_search"
 
-    if len(content) > 2000:
-        await send_long_reply(message, content)
+async def search_google_cse(query: str) -> List[str]:
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "key": settings.GOOGLE_API_KEY,
+        "cx": settings.GOOGLE_CSE_ID,
+        "q": query,
+        "num": 3,
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, params=params)
+        data = response.json()
+
+    results = []
+    if "items" in data:
+        for item in data["items"]:
+            snippet = f"{item['title']}: {item['snippet']}"
+            results.append(snippet)
+    return results
+
+async def generate_reply(user_id: int, text: str) -> str:
+    system_prompt = await process_message(user_id, text)
+    timezone = await redis_instance.get(f"timezone:{user_id}") or "Asia/Bangkok"
+    now = datetime.now(pytz.timezone(timezone))
+    system_prompt += f"\n\n⏰ timezone: {timezone}\n🕒 {format_thai_datetime(now)}"
+
+    if await should_search(text):
+        logger.info("🌐 ต้องค้นหาเว็บ")
+        search_results = await search_google_cse(text)
+        search_context = "\n".join(search_results)
+        text = f"""ข้อมูลจากการค้นหาเว็บ:\n{search_context}\n\nคำถาม: {text}"""
     else:
-        try:
-            await message.reply(content)
-        except discord.HTTPException:
-            await message.channel.send(content)
+        logger.info("🧠 ตอบได้เลย ไม่ต้องค้นหา")
 
-async def send_long_reply(message: discord.Message, content: str):
-    # แยกข้อความด้วยสองย่อหน้า จะได้ส่งได้เนียนกว่า
-    chunks = re.split(r'(?<=\n\n)', content)
-    current_chunk = ""
+    messages = await build_chat_context_smart(
+        redis_instance,
+        user_id,
+        text,
+        system_prompt=system_prompt,
+        model="gpt-4o-mini",
+        max_tokens_context=1200,
+        initial_limit=4
+    )
 
-    for paragraph in chunks:
-        if len(current_chunk) + len(paragraph) < 2000:
-            current_chunk += paragraph
-        else:
-            if current_chunk:
-                await message.channel.send(current_chunk.strip())
-            current_chunk = paragraph
+    response = await openai.ChatCompletion.acreate(
+        model="gpt-4o-mini",
+        messages=messages,
+        temperature=0.5,
+    )
+    return response.choices[0].message.content.strip()
 
-    if current_chunk.strip():
-        await message.channel.send(current_chunk.strip())
-        
 @bot.event
 async def on_ready():
     await setup_connection()
@@ -190,8 +214,7 @@ async def on_message(message: discord.Message):
     lowered = text.lower()
 
     topic = match_topic(lowered)
-    
-    # ✅ handle topic ปกติ (ไม่เกี่ยวกับ GPT)
+
     if topic == "image":
         query = re.sub(r"^(ดูรูป|ค้นรูป|หารูป|ขอรูป)[:,\s]*", "", lowered)
         if not query:
@@ -200,90 +223,62 @@ async def on_message(message: discord.Message):
         if query:
             await redis_instance.set(f"last_image_query:{message.author.id}", query, ex=300)
             image_url = await search_image(query, settings)
-            return await smart_reply(message, image_url or f"😿 ไม่พบรูปเกี่ยวกับ “{query}”")
-        return await smart_reply(message, "📷 พิมพ์ว่า `ดูรูป: แมว` ลองดูสิ")
+            return await message.channel.send(image_url or f"😿 ไม่พบรูปเกี่ยวกับ “{query}”")
+        return await message.channel.send("📷 พิมพ์ว่า `ดูรูป: แมว` ลองดูสิ")
 
     elif topic == "lotto":
-        return await smart_reply(message, await get_lottery_results())
+        return await message.channel.send(await get_lottery_results())
 
     elif topic == "exchange":
-        return await smart_reply(message, await get_exchange_rate())
+        return await message.channel.send(await get_exchange_rate())
 
     elif topic == "gold":
-        return await smart_reply(message, await get_gold_price_today())
+        return await message.channel.send(await get_gold_price_today())
 
     elif topic == "oil":
-        return await smart_reply(message, await get_oil_price_today())
+        return await message.channel.send(await get_oil_price_today())
 
     elif topic == "news":
-        return await smart_reply(message, await get_daily_news())
+        return await message.channel.send(await get_daily_news())
 
     elif topic == "global_news":
-        return await smart_reply(message, await get_global_news())
+        return await message.channel.send(await get_global_news())
 
     elif topic == "weather":
         match = re.search(r"(ที่|จังหวัด|เมือง)\s+(.+)", lowered)
         city = match.group(2).strip() if match else None
         if city:
             eng_city = convert_thai_to_english_city(city)
-            return await smart_reply(message, await get_weather(eng_city))
-        return await smart_reply(message, "📍 พิมพ์ว่า `อากาศที่ เชียงใหม่`")
+            return await message.channel.send(await get_weather(eng_city))
+        return await message.channel.send("📍 พิมพ์ว่า `อากาศที่ เชียงใหม่`")
 
     elif topic == "tarot":
-        return await smart_reply(message, "🔮 อยากดูดวงเรื่องอะไรดี? พิมพ์: ความรัก, การงาน, การเงิน, สุขภาพ")
+        return await message.channel.send("🔮 อยากดูดวงเรื่องอะไรดี? พิมพ์: ความรัก, การงาน, การเงิน, สุขภาพ")
 
     elif lowered in ["ความรัก", "การงาน", "การเงิน", "สุขภาพ"]:
-        return await smart_reply(message, await draw_cards_and_interpret_by_topic(lowered))
+        return await message.channel.send(await draw_cards_and_interpret_by_topic(lowered))
 
     elif any(kw in lowered for kw in ["วันนี้วันอะไร", "วันอะไรวันนี้"]):
-        return await smart_reply(message, f"📅 วันนี้คือ {get_thai_datetime_now()}")
+        return await message.channel.send(f"📅 วันนี้คือ {get_thai_datetime_now()}")
 
     elif any(kw in lowered for kw in ["กี่โมง", "เวลากี่โมง"]):
-        return await smart_reply(message, f"🕒 ขณะนี้คือ {get_thai_datetime_now()}")
-
-    # 🧠 Mode GPT (Optimize GPT ตรงนี้)
-    model = "gpt-4o-mini"
-    system_prompt = await process_message(message.author.id, text)
-    timezone = await redis_instance.get(f"timezone:{message.author.id}") or "Asia/Bangkok"
-    now = datetime.now(pytz.timezone(timezone))
-    system_prompt += f"\n\n⏰ timezone: {timezone}\n🕒 {format_thai_datetime(now)}"
-
-    messages = await build_chat_context_smart(
-        redis_instance,
-        message.author.id,
-        text,
-        system_prompt=system_prompt,
-        model=model,
-        max_tokens_context=1200,
-        initial_limit=4
-    )
+        return await message.channel.send(f"🕒 ขณะนี้คือ {get_thai_datetime_now()}")
 
     async with message.channel.typing():
-        task_reply = asyncio.create_task(
-            get_openai_response(
-                messages,
-                settings=settings,
-                model=model,
-                use_web_fallback=True,
-                fallback_model="gpt-4o-mini-search-preview"
-            )
-        )
-
-        # ขณะรอ GPT ตอบ ทำอย่างอื่นได้ (ถ้ามี)
-        reply = await task_reply
-
-        if not reply:
-            return await smart_reply(message, "⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า")
+        try:
+            reply = await generate_reply(message.author.id, text)
+        except Exception as e:
+            logger.error(f"❌ GPT Error: {e}")
+            return await message.channel.send("⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า")
 
         cleaned = clean_output_text(reply)
-        await smart_reply(message, cleaned)
+        await message.channel.send(cleaned)
 
         await store_chat(redis_instance, message.author.id, {
             "question": text,
             "response": reply
         })
 
-# ✅ Entry point
 async def main():
     await setup_connection()
     if redis_instance:
