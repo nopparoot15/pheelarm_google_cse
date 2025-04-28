@@ -118,6 +118,39 @@ async def create_table():
     except Exception as e:
         logger.error(f"❌ create_table error: {e}")
 
+async def send_long_reply(message: discord.Message, content: str):
+    chunks = re.split(r'(?<=\n\n)', content)
+    current_chunk = ""
+
+    for paragraph in chunks:
+        if len(current_chunk) + len(paragraph) < 2000:
+            current_chunk += paragraph
+        else:
+            if current_chunk:
+                await message.channel.send(current_chunk.strip())
+            current_chunk = paragraph
+
+    if current_chunk.strip():
+        await message.channel.send(current_chunk.strip())
+
+async def smart_reply(message: discord.Message, content: str):
+    content = clean_output_text(content)
+
+    # ลบ markdown [text](url) -> text <url>
+    content = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'\1 <\2>', content)
+    # ลบลิงก์เปล่า ๆ
+    content = re.sub(r'(?<!<)(https?://\S+)(?!>)', r'<\1>', content)
+    # ลบ ** เดี่ยว ๆ ที่หลงมา
+    content = re.sub(r'(?<!\*)\*\*(?!\*)', '', content)
+
+    if len(content) > 2000:
+        await send_long_reply(message, content)
+    else:
+        try:
+            await message.reply(content)
+        except discord.HTTPException:
+            await message.channel.send(content)
+
 async def process_message(user_id: int, text: str) -> str:
     base_prompt = (
         "คุณคือ 'พี่หลาม' หรือ 'พรี่หลาม' เป็นบอทผู้ช่วยที่พูดจาเป็นกันเองเหมือนมนุษย์ไทย "
@@ -272,7 +305,7 @@ async def on_message(message: discord.Message):
             return await message.channel.send("⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า")
 
         cleaned = clean_output_text(reply)
-        await message.channel.send(cleaned)
+        await smart_reply(message, cleaned)
 
         await store_chat(redis_instance, message.author.id, {
             "question": text,
