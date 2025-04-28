@@ -169,15 +169,28 @@ async def process_message(user_id: int, text: str) -> str:
 
     return clean_output_text(base_prompt).strip()
 
+# ✅ ฟังก์ชันช่วย: คำพูดแบบไหน "บังคับค้น"
+def is_force_search(text: str) -> bool:
+    text = text.lower()
+    force_keywords = [
+        "หา:", "ค้นหา:", "ขอข้อมูล", "มีข้อมูลใหม่", "ข้อมูลล่าสุด", "update", "เพิ่มเติม", "อัปเดต"
+    ]
+    return any(keyword in text for keyword in force_keywords)
+
+# ✅ ตัดสินใจว่าต้องค้นเว็บไหม
 async def should_search(question: str) -> bool:
+    if is_force_search(question):
+        logger.info("🛎️ ยูสเซอร์บังคับให้ค้นเว็บ")
+        return True
+
     prompt = f"""
-ประเมินคำถามนี้:
-- ถ้าตอบได้จากความรู้ทั่วไป (ไม่ต้องค้นหาเว็บ) ตอบ "no_search"
-- ถ้าต้องค้นข้อมูลล่าสุดจากเว็บ เช่น ข่าว ราคาสินค้า อากาศ ตอบ "need_search"
-อย่าตอบอย่างอื่น
+ตัดสินใจ:
+- "no_search" ถ้าคำถามตอบได้จากความรู้ทั่วไป
+- "need_search" ถ้าคำถามเกี่ยวกับข่าว เหตุการณ์ปัจจุบัน ราคาสินค้า อากาศ หวย ฯลฯ
 
 คำถาม: {question}
-ตอบ:
+
+ตอบสั้น ๆ ว่า:
 """.strip()
 
     response = await openai_client.chat.completions.create(
@@ -190,6 +203,7 @@ async def should_search(question: str) -> bool:
     decision = response.choices[0].message.content.strip().lower()
     return decision == "need_search"
 
+# ✅ ค้นหา Google CSE
 async def search_google_cse(query: str) -> List[str]:
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
@@ -198,17 +212,23 @@ async def search_google_cse(query: str) -> List[str]:
         "q": query,
         "num": 3,
     }
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10) as client:
         response = await client.get(url, params=params)
-        data = response.json()
+        response.raise_for_status()
+
+    data = response.json()
 
     results = []
     if "items" in data:
         for item in data["items"]:
-            snippet = f"{item['title']}: {item['snippet']}"
-            results.append(snippet)
+            title = item.get("title", "").strip()
+            snippet = item.get("snippet", "").strip()
+            if title and snippet:
+                results.append(f"{title}: {snippet}")
+
     return results
 
+# ✅ generate_reply ครบระบบ
 async def generate_reply(user_id: int, text: str) -> str:
     system_prompt = await process_message(user_id, text)
     timezone = await redis_instance.get(f"timezone:{user_id}") or "Asia/Bangkok"
@@ -216,11 +236,12 @@ async def generate_reply(user_id: int, text: str) -> str:
     system_prompt += f"\n\n⏰ timezone: {timezone}\n🕒 {format_thai_datetime(now)}"
     system_prompt = system_prompt.strip()
 
-    # 🧠 เพิ่มการดึง context เดิม
+    # 🧠 เอา context จากคำถามเก่า
     previous_question = await get_previous_message(redis_instance, user_id)
     if previous_question and not is_greeting(text):
         text = f"จากที่ก่อนหน้านี้ถามว่า: \"{previous_question}\"\n\nตอนนี้: {text}"
 
+    # 🌐 ต้องค้นเว็บไหม
     if await should_search(text):
         logger.info("🌐 ต้องค้นหาเว็บ")
         search_results = await search_google_cse(text)
@@ -229,6 +250,7 @@ async def generate_reply(user_id: int, text: str) -> str:
     else:
         logger.info("🧠 ตอบได้เลย ไม่ต้องค้นหา")
 
+    # ✅ context 600 tokens
     messages = await build_chat_context_smart(
         redis_instance,
         user_id,
@@ -239,13 +261,14 @@ async def generate_reply(user_id: int, text: str) -> str:
         initial_limit=6
     )
 
+    # ✅ ขอคำตอบ
     response = await get_openai_response(
         messages,
         model="gpt-4o-mini",
         temperature=0.5,
     )
 
-    return response.strip()
+    return clean_output_text(response).strip()
     
 @bot.event
 async def on_ready():
