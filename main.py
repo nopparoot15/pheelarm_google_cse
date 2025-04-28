@@ -214,12 +214,13 @@ async def generate_reply(user_id: int, text: str) -> str:
     timezone = await redis_instance.get(f"timezone:{user_id}") or "Asia/Bangkok"
     now = datetime.now(pytz.timezone(timezone))
     system_prompt += f"\n\n⏰ timezone: {timezone}\n🕒 {format_thai_datetime(now)}"
+    system_prompt = system_prompt.strip()  # ✅ strip อีกทีหลังเติม timezone
 
     if await should_search(text):
         logger.info("🌐 ต้องค้นหาเว็บ")
         search_results = await search_google_cse(text)
         search_context = "\n".join(search_results)
-        text = f"""ข้อมูลจากการค้นหาเว็บ:\n{search_context}\n\nคำถาม: {text}"""
+        text = f"ข้อมูลจากการค้นหาเว็บ:\n{search_context}\n\nคำถาม: {text}"
     else:
         logger.info("🧠 ตอบได้เลย ไม่ต้องค้นหา")
 
@@ -238,7 +239,8 @@ async def generate_reply(user_id: int, text: str) -> str:
         model="gpt-4o-mini",
         temperature=0.5,
     )
-    return response
+    
+    return response.strip()
     
 @bot.event
 async def on_ready():
