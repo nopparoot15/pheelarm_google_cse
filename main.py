@@ -38,6 +38,14 @@ from modules.utils.cleaner import clean_output_text
 from modules.utils.thai_to_eng_city import convert_thai_to_english_city
 from modules.utils.thai_datetime import get_thai_datetime_now, format_thai_datetime
 from modules.core.logger import logger
+from modules.utils.query_utils import (
+    is_greeting, 
+    is_about_bot, 
+    is_question, 
+    match_topic,
+    get_openai_response, 
+)
+
 
 # ✅ Load environment variables
 load_dotenv()
