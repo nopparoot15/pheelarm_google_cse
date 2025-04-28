@@ -224,13 +224,13 @@ async def generate_reply(user_id: int, text: str) -> str:
         initial_limit=4
     )
 
-    response = await openai_client.chat.completions.create(
+    response = await get_openai_response(
+        messages,
         model="gpt-4o-mini",
-        messages=messages,
         temperature=0.5,
     )
-    return response.choices[0].message.content.strip()
-
+    return response
+    
 @bot.event
 async def on_ready():
     await setup_connection()
