@@ -1,4 +1,6 @@
 import re
+from modules.core.openai_client import client as openai_client
+from modules.core.logger import logger
 
 # 🔧 Keywords ใช้ได้
 COMMON_GREETINGS = [
@@ -22,7 +24,6 @@ def is_about_bot(text: str) -> bool:
     text = text.lower()
     return any(re.search(p, text) for p in patterns)
 
-# 🧠 ยังมี match_topic() อยู่ เพื่อหา topic เฉพาะ เช่น ดูรูป, ทอง, ดวง
 def match_topic(text: str) -> str:
     lowered = text.lower()
     if any(word in lowered for word in ["ดูรูป", "หารูป", "ขอรูป", "ค้นรูป"]):
@@ -45,3 +46,36 @@ def match_topic(text: str) -> str:
         return "tarot"
     return ""
 
+async def get_openai_response(
+    messages: list,
+    model: str = "gpt-4o-mini",
+    max_tokens: int = 1800,
+    temperature: float = 0.6,
+    top_p: float = 1.0,
+    frequency_penalty: float = 0.2,
+    presence_penalty: float = 0.3,
+) -> str:
+    try:
+        response = await openai_client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+        )
+
+        # ✅ log token usage
+        if response.usage:
+            input_tokens = response.usage.prompt_tokens
+            output_tokens = response.usage.completion_tokens
+            total_tokens = response.usage.total_tokens
+            logger.info(f"🧮 Token Usage → Input: {input_tokens} | Output: {output_tokens} | Total: {total_tokens}")
+
+        content = response.choices[0].message.content.strip()
+        return content
+
+    except Exception as e:
+        logger.error(f"❌ get_openai_response error: {e}")
+        return "⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า"
