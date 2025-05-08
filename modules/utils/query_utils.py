@@ -24,28 +24,6 @@ def is_about_bot(text: str) -> bool:
     text = text.lower()
     return any(re.search(p, text) for p in patterns)
 
-def match_topic(text: str) -> str:
-    lowered = text.lower()
-    if any(word in lowered for word in ["ดูรูป", "หารูป", "ขอรูป", "ค้นรูป"]):
-        return "image"
-    if "หวย" in lowered or "ลอตเตอรี่" in lowered:
-        return "lotto"
-    if "แลกเงิน" in lowered or "อัตราแลกเปลี่ยน" in lowered:
-        return "exchange"
-    if "ราคาทอง" in lowered or "ทองคำ" in lowered:
-        return "gold"
-    if "ราคาน้ำมัน" in lowered or "น้ำมัน" in lowered:
-        return "oil"
-    if "ข่าววันนี้" in lowered or "ข่าว" in lowered:
-        return "news"
-    if "ข่าวโลก" in lowered or "ข่าวต่างประเทศ" in lowered:
-        return "global_news"
-    if "อากาศ" in lowered or "พยากรณ์อากาศ" in lowered:
-        return "weather"
-    if "ดูดวง" in lowered or "ไพ่ทาโรต์" in lowered or "ทาโรต์" in lowered:
-        return "tarot"
-    return ""
-
 async def get_openai_response(
     messages: list,
     model: str = "gpt-4o-mini",
