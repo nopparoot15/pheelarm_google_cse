@@ -42,7 +42,6 @@ from modules.utils.query_utils import (
     is_greeting, 
     is_about_bot, 
     is_question, 
-    match_topic,
     get_openai_response, 
 )
 
