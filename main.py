@@ -303,14 +303,6 @@ async def on_message(message: discord.Message):
     elif topic == "global_news":
         return await message.channel.send(await get_global_news())
 
-    elif topic == "weather":
-        match = re.search(r"(ที่|จังหวัด|เมือง)\s+(.+)", lowered)
-        city = match.group(2).strip() if match else None
-        if city:
-            eng_city = convert_thai_to_english_city(city)
-            return await message.channel.send(await get_weather(eng_city))
-        return await message.channel.send("📍 พิมพ์ว่า `อากาศที่ เชียงใหม่`")
-
     elif topic == "tarot":
         return await message.channel.send("🔮 อยากดูดวงเรื่องอะไรดี? พิมพ์: ความรัก, การงาน, การเงิน, สุขภาพ")
 
