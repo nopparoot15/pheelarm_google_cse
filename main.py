@@ -30,7 +30,6 @@ from modules.features.exchange_rate import get_exchange_rate
 from modules.features.weather_forecast import get_weather
 from modules.features.daily_news import get_daily_news
 from modules.features.global_news import get_global_news
-from modules.features.google_search import search_image
 from modules.tarot.tarot_reading import draw_cards_and_interpret_by_topic
 from modules.nlp.message_matcher import match_topic
 from modules.memory.chat_memory import store_chat, build_chat_context_smart, get_previous_message
