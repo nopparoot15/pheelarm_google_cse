@@ -286,18 +286,7 @@ async def on_message(message: discord.Message):
 
     topic = match_topic(lowered)
 
-    if topic == "image":
-        query = re.sub(r"^(ดูรูป|ค้นรูป|หารูป|ขอรูป)[:,\s]*", "", lowered)
-        if not query:
-            prev_query = await redis_instance.get(f"last_image_query:{message.author.id}")
-            query = prev_query
-        if query:
-            await redis_instance.set(f"last_image_query:{message.author.id}", query, ex=300)
-            image_url = await search_image(query, settings)
-            return await message.channel.send(image_url or f"😿 ไม่พบรูปเกี่ยวกับ “{query}”")
-        return await message.channel.send("📷 พิมพ์ว่า `ดูรูป: แมว` ลองดูสิ")
-
-    elif topic == "lotto":
+    if topic == "lotto":
         return await message.channel.send(await get_lottery_results())
 
     elif topic == "exchange":
