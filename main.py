@@ -226,7 +226,8 @@ async def search_google_cse(query: str) -> List[str]:
 
     return results
 
-# ✅ generate_reply ครบระบบ
+from modules.features.weather_forecast import get_weather
+
 async def generate_reply(user_id: int, text: str) -> str:
     system_prompt = await process_message(user_id, text)
     timezone = await redis_instance.get(f"timezone:{user_id}") or "Asia/Bangkok"
@@ -247,6 +248,12 @@ async def generate_reply(user_id: int, text: str) -> str:
         text = f"ข้อมูลจากการค้นหาเว็บ:\n{search_context}\n\nคำถาม: {text}"
     else:
         logger.info("🧠 ตอบได้เลย ไม่ต้องค้นหา")
+
+    # 🌦️ ตรวจสอบว่าผู้ใช้ถามเกี่ยวกับสภาพอากาศไหม
+    if "สภาพอากาศ" in text or "อากาศ" in text:  # สามารถปรับคำค้นให้เหมาะสม
+        logger.info("🌦️ ดึงข้อมูลสภาพอากาศ")
+        weather_info = await get_weather()  # เรียกใช้ฟังก์ชัน get_weather เพื่อดึงข้อมูล
+        text = f"ข้อมูลสภาพอากาศที่คุณถาม: {weather_info}\n\nคำถาม: {text}"
 
     # ✅ context 600 tokens
     messages = await build_chat_context_smart(
