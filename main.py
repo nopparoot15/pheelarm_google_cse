@@ -334,12 +334,6 @@ async def on_message(message: discord.Message):
     elif lowered in ["ความรัก", "การงาน", "การเงิน", "สุขภาพ"]:
         return await message.channel.send(await draw_cards_and_interpret_by_topic(lowered))
 
-    elif any(kw in lowered for kw in ["วันนี้วันอะไร", "วันอะไรวันนี้"]):
-        return await message.channel.send(f"📅 วันนี้คือ {get_thai_datetime_now()}")
-
-    elif any(kw in lowered for kw in ["กี่โมง", "เวลากี่โมง"]):
-        return await message.channel.send(f"🕒 ขณะนี้คือ {get_thai_datetime_now()}")
-
     async with message.channel.typing():
         try:
             reply = await generate_reply(message.author.id, text)
