@@ -44,7 +44,7 @@ def clean_output_text(text: str) -> str:
     text = re.sub(r'(^|\s)\*\*(?=\s)', r'\1', text)
 
     # ✅ ลิงก์ markdown: [text](url) → text <url>
-    text = re.sub(r'$begin:math:display$([^$end:math:display$]+)\]$begin:math:text$(https?://[^$end:math:text$]+)\)', r'\1 <\2>', text)
+    text = re.sub(r'\[([^\]]+)\]\((https?://[^\s)]+)\)', r'\1 <\2>', text)
     text = re.sub(r'(?<!<)(https?://\S+)(?!>)', r'<\1>', text)
 
     # ✅ ป้องกันการตัดบรรทัดมั่ว
@@ -54,6 +54,9 @@ def clean_output_text(text: str) -> str:
 
     # ✅ เชื่อมเลขข้อ เช่น 1. / 2. ก่อนแตก paragraph (สำคัญ!)
     text = re.sub(r'(?m)^(\d+)\.\s*\n+(\S)', r'\1. \2', text)
+
+    # ✅ เพิ่มเว้นบรรทัดหลังจบประโยคแล้วเจอ list item (ครอบคลุม !, …, ?!)
+    text = re.sub(r'([.!?…]+)(\s*)(?=(\d+\.|[•\-])\s+)', r'\1\n\n', text)
 
     # ✅ แบ่งข้อความใหม่ (~40 คำต่อย่อหน้า)
     sentences = re.split(r'(?<=[.!?])\s+', text)
