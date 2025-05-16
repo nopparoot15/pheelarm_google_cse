@@ -41,12 +41,16 @@ async def build_chat_context_smart(
 
     messages.append({"role": "user", "content": new_input})
 
-    # ✅ ตัด context ถ้า token เกิน
+    # ตัด context ถ้า token เกิน (ลบเป็นคู่ เพื่อรักษาคู่คำถาม-ตอบ)
     while True:
         token_used = count_tokens(messages, model=model)
-        if token_used <= max_tokens_context or len(messages) <= 2:
+        if token_used <= max_tokens_context or len(messages) <= 3:
             break
-        messages.pop(1)  # ลบข้อความที่ 1 ออก (หลัง system) เพื่อให้ยังคง "สั้น+ใหม่สุด"
+        if len(messages) > 3:
+            messages.pop(1)  # ลบ user เก่า
+            messages.pop(1)  # ลบ assistant เก่า
+        else:
+            break
 
     return messages
 
