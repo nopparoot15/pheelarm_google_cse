@@ -167,7 +167,6 @@ async def process_message(user_id: int, text: str) -> str:
         "หากผู้ใช้เปลี่ยนเรื่องหรือถามคำถามต่อยอด ให้ตอบอย่างลื่นไหลและลึกซึ้ง "
     )
 
-
     return clean_output_text(base_prompt).strip()
 
 # ✅ ฟังก์ชันช่วย: คำพูดแบบไหน "บังคับค้น"
