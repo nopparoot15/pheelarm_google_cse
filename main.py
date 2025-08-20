@@ -68,6 +68,39 @@ bot = commands.Bot(command_prefix="$", intents=intents)
 openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 redis_instance = None
 
+# ============ Helpers for Responses API ============
+def _as_dict(obj):
+    if isinstance(obj, dict):
+        return obj
+    try:
+        # OpenAI SDK objects behave like attrs
+        return obj.__dict__
+    except Exception:
+        return {}
+
+def extract_text_from_response(resp) -> str:
+    """
+    ดึงข้อความจาก Responses API แบบปลอดภัย
+    รองรับทั้ง object ของ SDK และ dict (กรณีคุณใช้ HTTP เอง)
+    """
+    texts = []
+    try:
+        output = getattr(resp, "output", None) or _as_dict(resp).get("output", [])
+        for item in output or []:
+            content = getattr(item, "content", None) or _as_dict(item).get("content", [])
+            for block in content or []:
+                btype = getattr(block, "type", None) or _as_dict(block).get("type")
+                if btype == "output_text":
+                    text = getattr(block, "text", None) or _as_dict(block).get("text", "")
+                    if text:
+                        texts.append(text)
+        final = "".join(texts).strip()
+        return final if final else "⚠️ ไม่สามารถอ่านผลลัพธ์จาก GPT ได้"
+    except Exception:
+        return "⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า"
+
+# ===================================================
+
 async def setup_connection():
     global redis_instance
 
@@ -171,7 +204,7 @@ def is_force_search(text: str) -> bool:
     ]
     return any(keyword in text for keyword in force_keywords)
 
-# ✅ ตัดสินใจว่าต้องค้นเว็บไหม
+# ✅ ตัดสินใจว่าต้องค้นเว็บไหม (Responses API + gpt-5-nano)
 async def should_search(question: str) -> bool:
     if is_force_search(question):
         logger.info("🛎️ ยูสเซอร์บังคับให้ค้นเว็บ")
@@ -187,14 +220,18 @@ async def should_search(question: str) -> bool:
 ตอบสั้น ๆ ว่า:
 """.strip()
 
-    response = await openai_client.responses.create(
-        model="gpt-5-nano",
-        input=[{"role": "user", "content": prompt}],
-        max_output_tokens=512,
-    )
-
-    decision = response.output[0].content[0].text.strip().lower()
-    return decision == "need_search"
+    try:
+        # ใช้ input เป็น string ตรง ๆ + จำกัดโทเคน >= 16
+        resp = await openai_client.responses.create(
+            model="gpt-5-nano",
+            input=prompt,
+            max_output_tokens=16,
+        )
+        decision = extract_text_from_response(resp).lower()
+        return decision == "need_search"
+    except Exception as e:
+        logger.error(f"❌ should_search error: {e}")
+        return False
 
 # ✅ ค้นหา Google CSE
 async def search_google_cse(query: str) -> List[str]:
@@ -221,7 +258,7 @@ async def search_google_cse(query: str) -> List[str]:
 
     return results
 
-# ✅ สร้างคำตอบ
+# ✅ สร้างคำตอบ (Responses API + gpt-5-nano)
 async def generate_reply(user_id: int, text: str) -> str:
     system_prompt = await process_message(user_id, text)
     timezone = await redis_instance.get(f"timezone:{user_id}") or "Asia/Bangkok"
@@ -243,7 +280,7 @@ async def generate_reply(user_id: int, text: str) -> str:
     else:
         logger.info("🧠 ตอบได้เลย ไม่ต้องค้นหา")
 
-    # ✅ context 600 tokens
+    # ✅ context 600 tokens (ยังใช้ของเดิม)
     messages = await build_chat_context_smart(
         redis_instance,
         user_id,
@@ -254,13 +291,26 @@ async def generate_reply(user_id: int, text: str) -> str:
         initial_limit=6
     )
 
-    # ✅ ขอคำตอบ
-    response = await openai_client.responses.create(
-        model="gpt-5-nano",
-        input=messages,
-    )
+    # รวม messages เป็นสตริงเดียวสำหรับ Responses API
+    # (Responses API รองรับ string ได้ดี และหลบ edge case โครงสร้าง message)
+    combined = []
+    for m in messages:
+        role = (m.get("role") or "").upper()
+        content = m.get("content") or ""
+        combined.append(f"{role}: {content}")
+    input_text = "\n".join(combined)
 
-    return clean_output_text(response.output[0].content[0].text).strip()
+    try:
+        resp = await openai_client.responses.create(
+            model="gpt-5-nano",
+            input=input_text,
+            max_output_tokens=512,  # >=16
+        )
+        answer = extract_text_from_response(resp)
+        return clean_output_text(answer).strip()
+    except Exception as e:
+        logger.error(f"❌ GPT Error: {e}")
+        return "⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า"
     
 @bot.event
 async def on_ready():
