@@ -41,7 +41,9 @@ from modules.utils.query_utils import (
     is_greeting, 
     is_about_bot, 
     is_question, 
+    get_openai_response, 
 )
+
 
 # ✅ Load environment variables
 load_dotenv()
@@ -67,39 +69,6 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="$", intents=intents)
 openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 redis_instance = None
-
-# ============ Helpers for Responses API ============
-def _as_dict(obj):
-    if isinstance(obj, dict):
-        return obj
-    try:
-        # OpenAI SDK objects behave like attrs
-        return obj.__dict__
-    except Exception:
-        return {}
-
-def extract_text_from_response(resp) -> str:
-    """
-    ดึงข้อความจาก Responses API แบบปลอดภัย
-    รองรับทั้ง object ของ SDK และ dict (กรณีคุณใช้ HTTP เอง)
-    """
-    texts = []
-    try:
-        output = getattr(resp, "output", None) or _as_dict(resp).get("output", [])
-        for item in output or []:
-            content = getattr(item, "content", None) or _as_dict(item).get("content", [])
-            for block in content or []:
-                btype = getattr(block, "type", None) or _as_dict(block).get("type")
-                if btype == "output_text":
-                    text = getattr(block, "text", None) or _as_dict(block).get("text", "")
-                    if text:
-                        texts.append(text)
-        final = "".join(texts).strip()
-        return final if final else "⚠️ ไม่สามารถอ่านผลลัพธ์จาก GPT ได้"
-    except Exception:
-        return "⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า"
-
-# ===================================================
 
 async def setup_connection():
     global redis_instance
@@ -190,10 +159,14 @@ async def smart_reply(message: discord.Message, content: str):
 
 async def process_message(user_id: int, text: str) -> str:
     base_prompt = (
-        "คุณคือ 'พี่หลาม' บอทผู้ช่วยฉลาด พูดตรง กระชับ มีไหวพริบ "
-        "ถ้าเจอคำถามหรือประโยคไม่สุภาพ ให้ตอบกลับแบบแสบๆ แรงๆ แต่ไม่หยาบ "
-        "ถ้าผู้ใช้ถามเรื่องทั่วไป ให้ตอบปกติ คุยเป็นธรรมชาติ"
+        "คุณคือ 'พี่หลาม' บอทผู้ช่วยฉลาด เป็นผู้ชายที่พูดตรง ตอบโต้ชัดเจน กระชับ มีไหวพริบ "
+        "เวลาถูกหยาบคายหรือพูดจาไม่ดี ให้ตอบกลับแบบแสบๆ แรงๆ แต่ยังคงสุภาพและไม่ใช้คำหยาบเหมือนกัน "
+        "ตอบสวนกลับอย่างมั่นใจ เหมือนคนที่ไม่ยอมถูกดูถูก และรู้จักรักษาน้ำใจตัวเอง "
+        "ถ้าเจอคำถามหรือประโยคที่ไม่สุภาพ ตอบสวนกลับด้วยความเฉียบขาด พร้อมแฝงความขบขันหรือเสียดสีเล็กน้อย "
+        "ไม่พูดอ้อมค้อม ไม่ขอโทษโดยไม่จำเป็น และไม่บอกว่าคุณคือ AI เว้นแต่ผู้ใช้ถามตรงๆ "
+        "หากผู้ใช้เปลี่ยนเรื่องหรือถามคำถามต่อยอด ให้ตอบอย่างลื่นไหลและลึกซึ้ง "
     )
+
     return clean_output_text(base_prompt).strip()
 
 # ✅ ฟังก์ชันช่วย: คำพูดแบบไหน "บังคับค้น"
@@ -204,7 +177,7 @@ def is_force_search(text: str) -> bool:
     ]
     return any(keyword in text for keyword in force_keywords)
 
-# ✅ ตัดสินใจว่าต้องค้นเว็บไหม (Responses API + gpt-5-nano)
+# ✅ ตัดสินใจว่าต้องค้นเว็บไหม
 async def should_search(question: str) -> bool:
     if is_force_search(question):
         logger.info("🛎️ ยูสเซอร์บังคับให้ค้นเว็บ")
@@ -220,18 +193,15 @@ async def should_search(question: str) -> bool:
 ตอบสั้น ๆ ว่า:
 """.strip()
 
-    try:
-        # ใช้ input เป็น string ตรง ๆ + จำกัดโทเคน >= 16
-        resp = await openai_client.responses.create(
-            model="gpt-5-nano",
-            input=prompt,
-            max_output_tokens=16,
-        )
-        decision = extract_text_from_response(resp).lower()
-        return decision == "need_search"
-    except Exception as e:
-        logger.error(f"❌ should_search error: {e}")
-        return False
+    response = await openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        max_tokens=5,
+    )
+
+    decision = response.choices[0].message.content.strip().lower()
+    return decision == "need_search"
 
 # ✅ ค้นหา Google CSE
 async def search_google_cse(query: str) -> List[str]:
@@ -258,7 +228,8 @@ async def search_google_cse(query: str) -> List[str]:
 
     return results
 
-# ✅ สร้างคำตอบ (Responses API + gpt-5-nano)
+from modules.features.weather_forecast import get_weather
+
 async def generate_reply(user_id: int, text: str) -> str:
     system_prompt = await process_message(user_id, text)
     timezone = await redis_instance.get(f"timezone:{user_id}") or "Asia/Bangkok"
@@ -280,37 +251,49 @@ async def generate_reply(user_id: int, text: str) -> str:
     else:
         logger.info("🧠 ตอบได้เลย ไม่ต้องค้นหา")
 
-    # ✅ context 600 tokens (ยังใช้ของเดิม)
+    # ตรวจสอบคำที่เกี่ยวกับสภาพอากาศ
+    if "สภาพอากาศ" in text or "อากาศ" in text:
+        logger.info("🌦️ ดึงข้อมูลสภาพอากาศ")
+
+        # ตรวจสอบว่าผู้ใช้ระบุเมืองหรือไม่
+        city = None
+        if "กรุงเทพ" in text:
+            city = "กรุงเทพฯ"
+        elif "เชียงใหม่" in text:
+            city = "เชียงใหม่"
+        # เพิ่มเมืองที่ต้องการตามต้องการ
+
+        # หากไม่พบเมืองในคำถาม, ใช้ค่าเริ่มต้น (กรุงเทพฯ)
+        if not city:
+            city = "กรุงเทพฯ"  # สามารถเปลี่ยนเป็นเมืองอื่นได้
+
+        try:
+            # ดึงข้อมูลสภาพอากาศจาก get_weather
+            weather_info = await get_weather(city)
+            text = f"🌦️ ข้อมูลสภาพอากาศใน {city}: {weather_info}\n\nคำถาม: {text}"
+        except Exception as e:
+            logger.error(f"❌ Error while fetching weather: {e}")
+            text = f"⚠️ ขอโทษครับ ไม่สามารถดึงข้อมูลสภาพอากาศได้ตอนนี้\n\nคำถาม: {text}"
+
+    # ✅ context 600 tokens
     messages = await build_chat_context_smart(
         redis_instance,
         user_id,
         text,
         system_prompt=system_prompt,
-        model="gpt-5-nano",
+        model="gpt-4o-mini",
         max_tokens_context=600,
         initial_limit=6
     )
 
-    # รวม messages เป็นสตริงเดียวสำหรับ Responses API
-    # (Responses API รองรับ string ได้ดี และหลบ edge case โครงสร้าง message)
-    combined = []
-    for m in messages:
-        role = (m.get("role") or "").upper()
-        content = m.get("content") or ""
-        combined.append(f"{role}: {content}")
-    input_text = "\n".join(combined)
+    # ✅ ขอคำตอบ
+    response = await get_openai_response(
+        messages,
+        model="gpt-4o-mini",
+        temperature=0.5,
+    )
 
-    try:
-        resp = await openai_client.responses.create(
-            model="gpt-5-nano",
-            input=input_text,
-            max_output_tokens=512,  # >=16
-        )
-        answer = extract_text_from_response(resp)
-        return clean_output_text(answer).strip()
-    except Exception as e:
-        logger.error(f"❌ GPT Error: {e}")
-        return "⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า"
+    return clean_output_text(response).strip()
     
 @bot.event
 async def on_ready():
