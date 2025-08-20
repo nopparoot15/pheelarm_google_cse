@@ -190,7 +190,6 @@ async def should_search(question: str) -> bool:
     response = await openai_client.responses.create(
         model="gpt-5-nano",
         input=[{"role": "user", "content": prompt}],
-        temperature=0,
         max_output_tokens=512,
     )
 
@@ -259,7 +258,6 @@ async def generate_reply(user_id: int, text: str) -> str:
     response = await openai_client.responses.create(
         model="gpt-5-nano",
         input=messages,
-        temperature=0.5,
     )
 
     return clean_output_text(response.output[0].content[0].text).strip()
