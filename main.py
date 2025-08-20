@@ -43,7 +43,6 @@ from modules.utils.query_utils import (
     is_question, 
 )
 
-
 # ✅ Load environment variables
 load_dotenv()
 
@@ -101,7 +100,6 @@ async def setup_connection():
         else:
             bot.pool = None
             logger.warning("⚠️ PostgreSQL credentials not provided. Skipping DB setup.")
-
     except Exception as e:
         logger.error(f"❌ PostgreSQL connection failed: {e}")
         bot.pool = None
@@ -110,7 +108,6 @@ async def create_table():
     if not bot.pool:
         logger.warning("⚠️ ไม่มี pool PostgreSQL, ข้ามการสร้างตาราง")
         return
-
     try:
         async with bot.pool.acquire() as con:
             await con.execute("""
@@ -126,7 +123,6 @@ async def create_table():
 async def send_long_reply(message: discord.Message, content: str):
     chunks = re.split(r'(?<=\n\n)', content)
     current_chunk = ""
-
     for paragraph in chunks:
         if len(current_chunk) + len(paragraph) < 2000:
             current_chunk += paragraph
@@ -134,20 +130,14 @@ async def send_long_reply(message: discord.Message, content: str):
             if current_chunk:
                 await message.channel.send(current_chunk.strip())
             current_chunk = paragraph
-
     if current_chunk.strip():
         await message.channel.send(current_chunk.strip())
 
 async def smart_reply(message: discord.Message, content: str):
     content = clean_output_text(content)
-
-    # ลบ markdown [text](url) -> text <url>
-    content = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'\1 <\2>', content)
-    # ลบลิงก์เปล่า ๆ
-    content = re.sub(r'(?<!<)(https?://\S+)(?!>)', r'<\1>', content)
-    # ลบ ** เดี่ยว ๆ ที่หลงมา
-    content = re.sub(r'(?<!\*)\*\*(?!\*)', '', content)
-
+    content = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'\1 <\2>', content)  # [text](url) -> text <url>
+    content = re.sub(r'(?<!<)(https?://\S+)(?!>)', r'<\1>', content)            # ลิงก์เปล่า -> <url>
+    content = re.sub(r'(?<!\*)\*\*(?!\*)', '', content)                          # ลบ ** เดี่ยว
     if len(content) > 2000:
         await send_long_reply(message, content)
     else:
@@ -165,18 +155,15 @@ async def process_message(user_id: int, text: str) -> str:
         "ไม่พูดอ้อมค้อม ไม่ขอโทษโดยไม่จำเป็น และไม่บอกว่าคุณคือ AI เว้นแต่ผู้ใช้ถามตรงๆ "
         "หากผู้ใช้เปลี่ยนเรื่องหรือถามคำถามต่อยอด ให้ตอบอย่างลื่นไหลและลึกซึ้ง "
     )
-
     return clean_output_text(base_prompt).strip()
 
-# ✅ ฟังก์ชันช่วย: คำพูดแบบไหน "บังคับค้น"
+# ✅ คำที่ "บังคับค้น"
 def is_force_search(text: str) -> bool:
     text = text.lower()
-    force_keywords = [
-        "หา:", "ค้นหา:", "ขอข้อมูล", "มีข้อมูลใหม่", "ข้อมูลล่าสุด", "update", "เพิ่มเติม", "อัปเดต"
-    ]
+    force_keywords = ["หา:", "ค้นหา:", "ขอข้อมูล", "มีข้อมูลใหม่", "ข้อมูลล่าสุด", "update", "เพิ่มเติม", "อัปเดต"]
     return any(keyword in text for keyword in force_keywords)
 
-# === helper: แปลง messages(list) -> สตริงสำหรับ Responses API
+# ✅ Helper: แปลง messages(list[{role,content}]) -> สตริง สำหรับ Responses API
 def messages_to_input(messages) -> str:
     if isinstance(messages, str):
         return messages
@@ -188,6 +175,30 @@ def messages_to_input(messages) -> str:
             lines.append(f"{role.upper()}: {content}")
         return "\n\n".join(lines)
     return str(messages)
+
+# ✅ Google CSE (3 รายการแรก)
+async def search_google_cse(query: str) -> List[str]:
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "key": settings.GOOGLE_API_KEY,
+        "cx": settings.GOOGLE_CSE_ID,
+        "q": query,
+        "num": 3,
+        "safe": "off",
+        "hl": "th",
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+
+    results = []
+    for item in data.get("items", []):
+        title = (item.get("title") or "").strip()
+        snippet = (item.get("snippet") or "").strip()
+        if title and snippet:
+            results.append(f"{title}: {snippet}")
+    return results
 
 # === ตัดสินใจว่าจะค้นเว็บไหม ===
 async def should_search(question: str) -> bool:
@@ -230,12 +241,10 @@ async def should_search(question: str) -> bool:
                         if c.get("type") == "output_text":
                             decision = c["text"].strip().lower()
                             return decision == "need_search"
-
     except Exception as e:
         logger.error(f"❌ Error in should_search: {e}")
 
     return False
-
 
 # === ตอบกลับผู้ใช้ ===
 async def generate_reply(user_id: int, text: str) -> str:
@@ -245,7 +254,7 @@ async def generate_reply(user_id: int, text: str) -> str:
     system_prompt += f"\n\n⏰ timezone: {timezone}\n🕒 {format_thai_datetime(now)}"
     system_prompt = system_prompt.strip()
 
-    # 🧠 เอา context จากคำถามเก่า
+    # 🧠 context เดิม
     previous_question = await get_previous_message(redis_instance, user_id)
     if previous_question and not is_greeting(text):
         text = f"จากที่ก่อนหน้านี้ถามว่า: \"{previous_question}\"\n\nตอนนี้: {text}"
@@ -253,14 +262,13 @@ async def generate_reply(user_id: int, text: str) -> str:
     # 🌐 ต้องค้นเว็บไหม
     if await should_search(text):
         logger.info("🌐 ต้องค้นหาเว็บ")
-        # (ยังไม่ได้แปะ search_google_cse แต่คุณมีอยู่แล้ว)
-        search_results = []  # placeholder
+        search_results = await search_google_cse(text)
         search_context = "\n".join(search_results)
         text = f"ข้อมูลจากการค้นหาเว็บ:\n{search_context}\n\nคำถาม: {text}"
     else:
         logger.info("🧠 ตอบได้เลย ไม่ต้องค้นหา")
 
-    # ตรวจสอบคำที่เกี่ยวกับสภาพอากาศ
+    # 🌦️ ดึงสภาพอากาศถ้าเกี่ยวข้อง
     if "สภาพอากาศ" in text or "อากาศ" in text:
         logger.info("🌦️ ดึงข้อมูลสภาพอากาศ")
         city = None
@@ -277,7 +285,7 @@ async def generate_reply(user_id: int, text: str) -> str:
             logger.error(f"❌ Error while fetching weather: {e}")
             text = f"⚠️ ขอโทษครับ ไม่สามารถดึงข้อมูลสภาพอากาศได้ตอนนี้\n\nคำถาม: {text}"
 
-    # ✅ สร้างข้อความ context
+    # ✅ สร้างข้อความ context (จาก memory)
     messages = await build_chat_context_smart(
         redis_instance,
         user_id,
@@ -308,6 +316,7 @@ async def generate_reply(user_id: int, text: str) -> str:
             resp.raise_for_status()
             data = resp.json()
 
+            # ✅ ดึง output ข้อความ
             for item in data.get("output", []):
                 if item.get("type") == "message":
                     for c in item.get("content", []):
@@ -320,7 +329,7 @@ async def generate_reply(user_id: int, text: str) -> str:
 
     return "⚠️ ไม่สามารถอ่านผลลัพธ์จาก GPT ได้"
 
-
+# === Discord events ===
 @bot.event
 async def on_ready():
     await setup_connection()
@@ -335,30 +344,22 @@ async def on_message(message: discord.Message):
 
     text = message.content.strip()
     lowered = text.lower()
-
     topic = match_topic(lowered)
 
     if topic == "lotto":
         return await message.channel.send(await get_lottery_results())
-
     elif topic == "exchange":
         return await message.channel.send(await get_exchange_rate())
-
     elif topic == "gold":
         return await message.channel.send(await get_gold_price_today())
-
     elif topic == "oil":
         return await message.channel.send(await get_oil_price_today())
-
     elif topic == "news":
         return await message.channel.send(await get_daily_news())
-
     elif topic == "global_news":
         return await message.channel.send(await get_global_news())
-
     elif topic == "tarot":
         return await message.channel.send("🔮 อยากดูดวงเรื่องอะไรดี? พิมพ์: ความรัก, การงาน, การเงิน, สุขภาพ")
-
     elif lowered in ["ความรัก", "การงาน", "การเงิน", "สุขภาพ"]:
         return await message.channel.send(await draw_cards_and_interpret_by_topic(lowered))
 
