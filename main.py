@@ -32,15 +32,16 @@ from modules.features.daily_news import get_daily_news
 from modules.features.global_news import get_global_news
 from modules.tarot.tarot_reading import draw_cards_and_interpret_by_topic
 from modules.nlp.message_matcher import match_topic
-from modules.memory.chat_memory import store_chat, build_chat_context_smart, get_previous_message
+# ⛔️ เลี่ยง token counter/tiktoken โดยไม่ใช้ build_chat_context_smart
+from modules.memory.chat_memory import store_chat, get_previous_message
 from modules.utils.cleaner import clean_output_text
 from modules.utils.thai_to_eng_city import convert_thai_to_english_city
 from modules.utils.thai_datetime import get_thai_datetime_now, format_thai_datetime
 from modules.core.logger import logger
 from modules.utils.query_utils import (
-    is_greeting, 
-    is_about_bot, 
-    is_question, 
+    is_greeting,
+    is_about_bot,
+    is_question,
 )
 
 # ✅ Load environment variables
@@ -68,6 +69,11 @@ bot = commands.Bot(command_prefix="$", intents=intents)
 openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 redis_instance = None
 
+OPENAI_TIMEOUT = httpx.Timeout(60.0)
+
+# =========================
+# Boot & Infra
+# =========================
 async def setup_connection():
     global redis_instance
 
@@ -113,13 +119,16 @@ async def create_table():
             await con.execute("""
                 CREATE TABLE IF NOT EXISTS context (
                     id BIGINT PRIMARY KEY,
-                    chatcontext TEXT[] DEFAULT ARRAY[]::TEXT[] 
+                    chatcontext TEXT[] DEFAULT ARRAY[]::TEXT[]
                 )
             """)
             logger.info("✅ context table ensured")
     except Exception as e:
         logger.error(f"❌ create_table error: {e}")
 
+# =========================
+# Discord helpers
+# =========================
 async def send_long_reply(message: discord.Message, content: str):
     chunks = re.split(r'(?<=\n\n)', content)
     current_chunk = ""
@@ -146,6 +155,9 @@ async def smart_reply(message: discord.Message, content: str):
         except discord.HTTPException:
             await message.channel.send(content)
 
+# =========================
+# Prompts & Context
+# =========================
 async def process_message(user_id: int, text: str) -> str:
     base_prompt = (
         "คุณคือ 'พี่หลาม' บอทผู้ช่วยฉลาด เป็นผู้ชายที่พูดตรง ตอบโต้ชัดเจน กระชับ มีไหวพริบ "
@@ -157,26 +169,22 @@ async def process_message(user_id: int, text: str) -> str:
     )
     return clean_output_text(base_prompt).strip()
 
-# ✅ คำที่ "บังคับค้น"
 def is_force_search(text: str) -> bool:
     text = text.lower()
     force_keywords = ["หา:", "ค้นหา:", "ขอข้อมูล", "มีข้อมูลใหม่", "ข้อมูลล่าสุด", "update", "เพิ่มเติม", "อัปเดต"]
     return any(keyword in text for keyword in force_keywords)
 
-# ✅ Helper: แปลง messages(list[{role,content}]) -> สตริง สำหรับ Responses API
-def messages_to_input(messages) -> str:
-    if isinstance(messages, str):
-        return messages
-    if isinstance(messages, list):
-        lines = []
-        for m in messages:
-            role = m.get("role", "user")
-            content = m.get("content", "")
-            lines.append(f"{role.upper()}: {content}")
-        return "\n\n".join(lines)
-    return str(messages)
+# 🔹 สร้าง context แบบ offline-safe (ไม่ใช้ tiktoken)
+def build_chat_context_simple(system_prompt: str, text: str) -> str:
+    lines = []
+    if system_prompt:
+        lines.append(f"SYSTEM: {system_prompt}")
+    lines.append(f"USER: {text}")
+    return "\n\n".join(lines)
 
-# ✅ Google CSE (3 รายการแรก)
+# =========================
+# Web search
+# =========================
 async def search_google_cse(query: str) -> List[str]:
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
@@ -187,7 +195,7 @@ async def search_google_cse(query: str) -> List[str]:
         "safe": "off",
         "hl": "th",
     }
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(url, params=params)
         resp.raise_for_status()
         data = resp.json()
@@ -200,7 +208,40 @@ async def search_google_cse(query: str) -> List[str]:
             results.append(f"{title}: {snippet}")
     return results
 
-# === ตัดสินใจว่าจะค้นเว็บไหม ===
+# =========================
+# OpenAI Responses API helper
+# =========================
+async def call_openai_responses(payload: dict) -> dict:
+    for attempt in range(2):  # retry 1 ครั้งสำหรับ 5xx/timeout
+        try:
+            async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
+                resp = await client.post(
+                    "https://api.openai.com/v1/responses",
+                    headers={
+                        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+            if resp.status_code // 100 == 2:
+                return resp.json()
+            if 500 <= resp.status_code < 600:
+                logger.warning(f"🔁 OpenAI {resp.status_code}: retrying...")
+                continue
+            # 4xx: log body แล้วหยุด
+            logger.error(f"❌ OpenAI {resp.status_code}: {resp.text}")
+            break
+        except (httpx.TimeoutException, httpx.ReadTimeout):
+            logger.warning("⏳ OpenAI timeout, retrying...")
+            continue
+        except Exception as e:
+            logger.error(f"❌ OpenAI error: {type(e).__name__}: {e}")
+            break
+    raise RuntimeError("OpenAI call failed")
+
+# =========================
+# Decision: should_search
+# =========================
 async def should_search(question: str) -> bool:
     if is_force_search(question):
         logger.info("🛎️ ยูสเซอร์บังคับให้ค้นเว็บ")
@@ -217,36 +258,27 @@ async def should_search(question: str) -> bool:
 """.strip()
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={
-                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "gpt-5-nano",
-                    "input": prompt,
-                    "max_output_tokens": 5,
-                    "reasoning": {"effort": "minimal"},
-                    "text": {"verbosity": "low"}
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-            for item in data.get("output", []):
-                if item.get("type") == "message":
-                    for c in item.get("content", []):
-                        if c.get("type") == "output_text":
-                            decision = c["text"].strip().lower()
-                            return decision == "need_search"
+        data = await call_openai_responses({
+            "model": "gpt-5-nano",
+            "input": prompt,
+            "max_output_tokens": 5,
+            "reasoning": {"effort": "minimal"},
+            "text": {"verbosity": "low"},
+        })
+        for item in data.get("output", []):
+            if item.get("type") == "message":
+                for c in item.get("content", []):
+                    if c.get("type") == "output_text":
+                        decision = c["text"].strip().lower()
+                        return decision == "need_search"
     except Exception as e:
-        logger.error(f"❌ Error in should_search: {e}")
+        logger.error(f"❌ Error in should_search: {type(e).__name__}: {e}")
 
     return False
 
-# === ตอบกลับผู้ใช้ ===
+# =========================
+# Generate reply
+# =========================
 async def generate_reply(user_id: int, text: str) -> str:
     system_prompt = await process_message(user_id, text)
     timezone = await redis_instance.get(f"timezone:{user_id}") or "Asia/Bangkok"
@@ -254,21 +286,24 @@ async def generate_reply(user_id: int, text: str) -> str:
     system_prompt += f"\n\n⏰ timezone: {timezone}\n🕒 {format_thai_datetime(now)}"
     system_prompt = system_prompt.strip()
 
-    # 🧠 context เดิม
+    # 🧠 ประกอบประโยคด้วยคำถามก่อนหน้า (ไม่ใช้ token counter)
     previous_question = await get_previous_message(redis_instance, user_id)
     if previous_question and not is_greeting(text):
         text = f"จากที่ก่อนหน้านี้ถามว่า: \"{previous_question}\"\n\nตอนนี้: {text}"
 
-    # 🌐 ต้องค้นเว็บไหม
+    # 🌐 ตัดสินใจค้นเว็บ
     if await should_search(text):
         logger.info("🌐 ต้องค้นหาเว็บ")
-        search_results = await search_google_cse(text)
-        search_context = "\n".join(search_results)
-        text = f"ข้อมูลจากการค้นหาเว็บ:\n{search_context}\n\nคำถาม: {text}"
+        try:
+            search_results = await search_google_cse(text)
+            search_context = "\n".join(search_results)
+            text = f"ข้อมูลจากการค้นหาเว็บ:\n{search_context}\n\nคำถาม: {text}"
+        except Exception as e:
+            logger.error(f"❌ search_google_cse error: {e}")
     else:
         logger.info("🧠 ตอบได้เลย ไม่ต้องค้นหา")
 
-    # 🌦️ ดึงสภาพอากาศถ้าเกี่ยวข้อง
+    # 🌦️ ข้อมูลอากาศ (optional)
     if "สภาพอากาศ" in text or "อากาศ" in text:
         logger.info("🌦️ ดึงข้อมูลสภาพอากาศ")
         city = None
@@ -283,45 +318,24 @@ async def generate_reply(user_id: int, text: str) -> str:
             text = f"🌦️ ข้อมูลสภาพอากาศใน {city}: {weather_info}\n\nคำถาม: {text}"
         except Exception as e:
             logger.error(f"❌ Error while fetching weather: {e}")
-            text = f"⚠️ ขอโทษครับ ไม่สามารถดึงข้อมูลสภาพอากาศได้ตอนนี้\n\nคำถาม: {text}"
 
-    # ✅ สร้างข้อความ context (จาก memory)
-    messages = await build_chat_context_smart(
-        redis_instance,
-        user_id,
-        text,
-        system_prompt=system_prompt,
-        model="gpt-5-nano",
-        max_tokens_context=600,
-        initial_limit=6
-    )
+    # 🔹 สร้าง input สำหรับ Responses API (offline-safe)
+    input_text = build_chat_context_simple(system_prompt, text)
 
-    # === เรียก Responses API ===
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={
-                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "gpt-5-nano",
-                    "input": messages_to_input(messages),
-                    "max_output_tokens": 1024,
-                    "reasoning": {"effort": "minimal"},
-                    "text": {"verbosity": "low"}
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        data = await call_openai_responses({
+            "model": "gpt-5-nano",
+            "input": input_text,
+            "max_output_tokens": 512,           # ลด latency; ปรับได้ตามต้องการ
+            "reasoning": {"effort": "minimal"}, # เร็วสุดใน GPT-5
+            "text": {"verbosity": "low"}        # ตอบกระชับ
+        })
 
-            # ✅ ดึง output ข้อความ
-            for item in data.get("output", []):
-                if item.get("type") == "message":
-                    for c in item.get("content", []):
-                        if c.get("type") == "output_text":
-                            return clean_output_text(c["text"]).strip()
+        for item in data.get("output", []):
+            if item.get("type") == "message":
+                for c in item.get("content", []):
+                    if c.get("type") == "output_text":
+                        return clean_output_text(c["text"]).strip()
 
     except Exception as e:
         logger.exception(f"⚠️ Unexpected error while calling GPT-5 nano: {e}")
@@ -329,7 +343,9 @@ async def generate_reply(user_id: int, text: str) -> str:
 
     return "⚠️ ไม่สามารถอ่านผลลัพธ์จาก GPT ได้"
 
-# === Discord events ===
+# =========================
+# Discord events
+# =========================
 @bot.event
 async def on_ready():
     await setup_connection()
@@ -373,11 +389,15 @@ async def on_message(message: discord.Message):
         cleaned = clean_output_text(reply)
         await smart_reply(message, cleaned)
 
+        # เก็บแชท (ยังใช้ได้ตามเดิม)
         await store_chat(redis_instance, message.author.id, {
             "question": text,
             "response": reply
         })
 
+# =========================
+# Main
+# =========================
 async def main():
     await setup_connection()
     if redis_instance:
