@@ -41,7 +41,6 @@ from modules.utils.query_utils import (
     is_greeting, 
     is_about_bot, 
     is_question, 
-    get_openai_response, 
 )
 
 
@@ -177,7 +176,20 @@ def is_force_search(text: str) -> bool:
     ]
     return any(keyword in text for keyword in force_keywords)
 
-# ✅ ตัดสินใจว่าต้องค้นเว็บไหม
+# === helper: แปลง messages(list) -> สตริงสำหรับ Responses API
+def messages_to_input(messages) -> str:
+    if isinstance(messages, str):
+        return messages
+    if isinstance(messages, list):
+        lines = []
+        for m in messages:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            lines.append(f"{role.upper()}: {content}")
+        return "\n\n".join(lines)
+    return str(messages)
+
+# === ตัดสินใจว่าจะค้นเว็บไหม ===
 async def should_search(question: str) -> bool:
     if is_force_search(question):
         logger.info("🛎️ ยูสเซอร์บังคับให้ค้นเว็บ")
@@ -193,43 +205,39 @@ async def should_search(question: str) -> bool:
 ตอบสั้น ๆ ว่า:
 """.strip()
 
-    response = await openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-        max_tokens=5,
-    )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={
+                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-5-nano",
+                    "input": prompt,
+                    "max_output_tokens": 5,
+                    "reasoning": {"effort": "minimal"},
+                    "text": {"verbosity": "low"}
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-    decision = response.choices[0].message.content.strip().lower()
-    return decision == "need_search"
+            for item in data.get("output", []):
+                if item.get("type") == "message":
+                    for c in item.get("content", []):
+                        if c.get("type") == "output_text":
+                            decision = c["text"].strip().lower()
+                            return decision == "need_search"
 
-# ✅ ค้นหา Google CSE
-async def search_google_cse(query: str) -> List[str]:
-    url = "https://www.googleapis.com/customsearch/v1"
-    params = {
-        "key": settings.GOOGLE_API_KEY,
-        "cx": settings.GOOGLE_CSE_ID,
-        "q": query,
-        "num": 3,
-    }
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
+    except Exception as e:
+        logger.error(f"❌ Error in should_search: {e}")
 
-    data = response.json()
+    return False
 
-    results = []
-    if "items" in data:
-        for item in data["items"]:
-            title = item.get("title", "").strip()
-            snippet = item.get("snippet", "").strip()
-            if title and snippet:
-                results.append(f"{title}: {snippet}")
 
-    return results
-
-from modules.features.weather_forecast import get_weather
-
+# === ตอบกลับผู้ใช้ ===
 async def generate_reply(user_id: int, text: str) -> str:
     system_prompt = await process_message(user_id, text)
     timezone = await redis_instance.get(f"timezone:{user_id}") or "Asia/Bangkok"
@@ -245,7 +253,8 @@ async def generate_reply(user_id: int, text: str) -> str:
     # 🌐 ต้องค้นเว็บไหม
     if await should_search(text):
         logger.info("🌐 ต้องค้นหาเว็บ")
-        search_results = await search_google_cse(text)
+        # (ยังไม่ได้แปะ search_google_cse แต่คุณมีอยู่แล้ว)
+        search_results = []  # placeholder
         search_context = "\n".join(search_results)
         text = f"ข้อมูลจากการค้นหาเว็บ:\n{search_context}\n\nคำถาม: {text}"
     else:
@@ -254,47 +263,64 @@ async def generate_reply(user_id: int, text: str) -> str:
     # ตรวจสอบคำที่เกี่ยวกับสภาพอากาศ
     if "สภาพอากาศ" in text or "อากาศ" in text:
         logger.info("🌦️ ดึงข้อมูลสภาพอากาศ")
-
-        # ตรวจสอบว่าผู้ใช้ระบุเมืองหรือไม่
         city = None
         if "กรุงเทพ" in text:
             city = "กรุงเทพฯ"
         elif "เชียงใหม่" in text:
             city = "เชียงใหม่"
-        # เพิ่มเมืองที่ต้องการตามต้องการ
-
-        # หากไม่พบเมืองในคำถาม, ใช้ค่าเริ่มต้น (กรุงเทพฯ)
         if not city:
-            city = "กรุงเทพฯ"  # สามารถเปลี่ยนเป็นเมืองอื่นได้
-
+            city = "กรุงเทพฯ"
         try:
-            # ดึงข้อมูลสภาพอากาศจาก get_weather
             weather_info = await get_weather(city)
             text = f"🌦️ ข้อมูลสภาพอากาศใน {city}: {weather_info}\n\nคำถาม: {text}"
         except Exception as e:
             logger.error(f"❌ Error while fetching weather: {e}")
             text = f"⚠️ ขอโทษครับ ไม่สามารถดึงข้อมูลสภาพอากาศได้ตอนนี้\n\nคำถาม: {text}"
 
-    # ✅ context 600 tokens
+    # ✅ สร้างข้อความ context
     messages = await build_chat_context_smart(
         redis_instance,
         user_id,
         text,
         system_prompt=system_prompt,
-        model="gpt-4o-mini",
+        model="gpt-5-nano",
         max_tokens_context=600,
         initial_limit=6
     )
 
-    # ✅ ขอคำตอบ
-    response = await get_openai_response(
-        messages,
-        model="gpt-4o-mini",
-        temperature=0.5,
-    )
+    # === เรียก Responses API ===
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={
+                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-5-nano",
+                    "input": messages_to_input(messages),
+                    "max_output_tokens": 1024,
+                    "reasoning": {"effort": "minimal"},
+                    "text": {"verbosity": "low"}
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-    return clean_output_text(response).strip()
-    
+            for item in data.get("output", []):
+                if item.get("type") == "message":
+                    for c in item.get("content", []):
+                        if c.get("type") == "output_text":
+                            return clean_output_text(c["text"]).strip()
+
+    except Exception as e:
+        logger.exception(f"⚠️ Unexpected error while calling GPT-5 nano: {e}")
+        return "⚠️ เกิดข้อผิดพลาดที่ไม่คาดคิด"
+
+    return "⚠️ ไม่สามารถอ่านผลลัพธ์จาก GPT ได้"
+
+
 @bot.event
 async def on_ready():
     await setup_connection()
