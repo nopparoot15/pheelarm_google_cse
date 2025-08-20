@@ -191,7 +191,7 @@ async def should_search(question: str) -> bool:
         model="gpt-5-nano",
         input=[{"role": "user", "content": prompt}],
         temperature=0,
-        max_output_tokens=5,
+        max_output_tokens=512,
     )
 
     decision = response.output[0].content[0].text.strip().lower()
