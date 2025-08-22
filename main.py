@@ -167,7 +167,7 @@ async def process_message(user_id: int, text: str) -> str:
         "If code is requested, provide runnable examples in code blocks."
     )
 
-    return clean_output_text(base_prompt).strip()
+    return base_prompt.strip()
 
 # ✅ ฟังก์ชันช่วย: คำพูดแบบไหน "บังคับค้น"
 def is_force_search(text: str) -> bool:
@@ -231,44 +231,60 @@ async def search_google_cse(query: str) -> List[str]:
 from modules.features.weather_forecast import get_weather
 
 async def generate_reply(user_id: int, text: str) -> str:
+    # ✅ สร้าง system prompt (ดิบ ไม่ต้อง clean)
     system_prompt = await process_message(user_id, text)
-    timezone = await redis_instance.get(f"timezone:{user_id}") or "Asia/Bangkok"
-    now = datetime.now(pytz.timezone(timezone))
-    system_prompt += f"\n\n⏰ timezone: {timezone}\n🕒 {format_thai_datetime(now)}"
-    system_prompt = system_prompt.strip()
 
-    # 🧠 เอา context จากคำถามเก่า
+    # ✅ รับ timezone จาก Redis (ถ้าไม่มี ใช้ Asia/Bangkok)
+    tz_key = f"timezone:{user_id}"
+    user_tz = None
+    try:
+        if redis_instance:
+            user_tz = await redis_instance.get(tz_key)
+    except Exception as e:
+        logger.warning(f"⚠️ Redis read failed for {tz_key}: {e}")
+
+    timezone = user_tz or "Asia/Bangkok"
+    now = datetime.now(pytz.timezone(timezone))
+
+    # ✅ เพิ่มข้อมูลบริบทเวลา (แยกจากคำสั่งหลัก แต่ยังคงอยู่ใน system)
+    system_prompt = (
+        system_prompt.strip()
+        + f"\n\n⏰ timezone: {timezone}\n🕒 {format_thai_datetime(now)}"
+    ).strip()
+
+    # 🧠 เอา context จากคำถามเก่า (ต่อประโยคให้เป็นธรรมชาติ)
     previous_question = await get_previous_message(redis_instance, user_id)
     if previous_question and not is_greeting(text):
-        text = f"จากที่ก่อนหน้านี้ถามว่า: \"{previous_question}\"\n\nตอนนี้: {text}"
+        text = f"ต่อจากที่ก่อนหน้านี้ถามว่า: \"{previous_question}\"\n\nตอนนี้: {text}"
 
     # 🌐 ต้องค้นเว็บไหม
     if await should_search(text):
         logger.info("🌐 ต้องค้นหาเว็บ")
-        search_results = await search_google_cse(text)
-        search_context = "\n".join(search_results)
-        text = f"ข้อมูลจากการค้นหาเว็บ:\n{search_context}\n\nคำถาม: {text}"
+        try:
+            search_results = await search_google_cse(text)
+        except Exception as e:
+            logger.error(f"❌ Web search error: {e}")
+            search_results = []
+        if search_results:
+            search_context = "\n".join(search_results)
+            text = f"ข้อมูลจากการค้นหาเว็บ:\n{search_context}\n\nคำถาม: {text}"
     else:
         logger.info("🧠 ตอบได้เลย ไม่ต้องค้นหา")
 
-    # ตรวจสอบคำที่เกี่ยวกับสภาพอากาศ
-    if "สภาพอากาศ" in text or "อากาศ" in text:
+    # 🌦️ ตรวจสอบคำที่เกี่ยวกับสภาพอากาศอย่างง่าย
+    if ("สภาพอากาศ" in text) or ("อากาศ" in text):
         logger.info("🌦️ ดึงข้อมูลสภาพอากาศ")
-
-        # ตรวจสอบว่าผู้ใช้ระบุเมืองหรือไม่
         city = None
         if "กรุงเทพ" in text:
             city = "กรุงเทพฯ"
         elif "เชียงใหม่" in text:
             city = "เชียงใหม่"
-        # เพิ่มเมืองที่ต้องการตามต้องการ
+        # TODO: เพิ่ม mapping เมืองอื่น ๆ ตามต้องการ
 
-        # หากไม่พบเมืองในคำถาม, ใช้ค่าเริ่มต้น (กรุงเทพฯ)
         if not city:
-            city = "กรุงเทพฯ"  # สามารถเปลี่ยนเป็นเมืองอื่นได้
+            city = "กรุงเทพฯ"
 
         try:
-            # ดึงข้อมูลสภาพอากาศจาก get_weather
             weather_info = await get_weather(city)
             text = f"🌦️ ข้อมูลสภาพอากาศใน {city}: {weather_info}\n\nคำถาม: {text}"
         except Exception as e:
@@ -286,14 +302,16 @@ async def generate_reply(user_id: int, text: str) -> str:
         initial_limit=6
     )
 
-    # ✅ ขอคำตอบ
+    # ✅ ขอคำตอบจากโมเดล
     response = await get_openai_response(
         messages,
         model="gpt-4o-mini",
         temperature=0.5,
     )
 
+    # ✅ clean เฉพาะ output ของบอท (ไม่แตะ system prompt)
     return clean_output_text(response).strip()
+
     
 @bot.event
 async def on_ready():
@@ -343,8 +361,9 @@ async def on_message(message: discord.Message):
             logger.error(f"❌ GPT Error: {e}")
             return await message.channel.send("⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า")
 
-        cleaned = clean_output_text(reply)
-        await smart_reply(message, cleaned)
+        # ❌ เดิม: cleaned = clean_output_text(reply)
+        # ✅ ปล่อยให้ smart_reply เป็นคน clean (กัน clean ซ้ำซ้อน)
+        await smart_reply(message, reply)
 
         await store_chat(redis_instance, message.author.id, {
             "question": text,
