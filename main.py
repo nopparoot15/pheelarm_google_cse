@@ -158,14 +158,14 @@ async def smart_reply(message: discord.Message, content: str):
             await message.channel.send(content)
 
 async def process_message(user_id: int, text: str) -> str:
-        base_prompt = (
-            "You are ChatGPT, a large language model trained by OpenAI.\n"
-            "Your name is พี่หลาม.\n"
-            "Answer as helpfully, clearly, and conversationally as possible.\n"
-            "Use markdown for formatting.\n"
-            "If user asks for lists, use bullets.\n"
-            "If code is requested, provide runnable examples in code blocks."
-        )
+    base_prompt = (
+        "You are ChatGPT, a large language model trained by OpenAI.\n"
+        "Your name is พี่หลาม.\n"
+        "Answer as helpfully, clearly, and conversationally as possible.\n"
+        "Use markdown for formatting.\n"
+        "If user asks for lists, use bullets.\n"
+        "If code is requested, provide runnable examples in code blocks."
+    )
 
     return clean_output_text(base_prompt).strip()
 
