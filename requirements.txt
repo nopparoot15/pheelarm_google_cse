@@ -14,4 +14,4 @@ google-auth-httplib2
 google-auth-oauthlib
 beautifulsoup4
 lxml
-tiktoken>=0.5.2
+tiktoken
