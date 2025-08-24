@@ -326,7 +326,12 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot or message.channel.id != CHANNEL_ID or message.content.startswith("!"):
+    # ข้ามบอท, DM, และข้อความที่ขึ้นต้นด้วย "!"
+    if message.author.bot or message.guild is None or message.content.startswith("!"):
+        return
+
+    # อนุญาตเฉพาะช่องที่อยู่ในลิสต์ CHANNEL_ID
+    if message.channel.id not in CHANNEL_ID:
         return
 
     text = message.content.strip()
@@ -353,7 +358,9 @@ async def on_message(message: discord.Message):
         return await message.channel.send(await get_global_news())
 
     elif topic == "tarot":
-        return await message.channel.send("🔮 อยากดูดวงเรื่องอะไรดี? พิมพ์: ความรัก, การงาน, การเงิน, สุขภาพ")
+        return await message.channel.send(
+            "🔮 อยากดูดวงเรื่องอะไรดี? พิมพ์: ความรัก, การงาน, การเงิน, สุขภาพ"
+        )
 
     elif lowered in ["ความรัก", "การงาน", "การเงิน", "สุขภาพ"]:
         return await message.channel.send(await draw_cards_and_interpret_by_topic(lowered))
@@ -365,8 +372,7 @@ async def on_message(message: discord.Message):
             logger.error(f"❌ GPT Error: {e}")
             return await message.channel.send("⚠️ พี่หลามงงเลย ตอบไม่ได้จริง ๆ จ้า")
 
-        # ❌ เดิม: cleaned = clean_output_text(reply)
-        # ✅ ปล่อยให้ smart_reply เป็นคน clean (กัน clean ซ้ำซ้อน)
+        # ✅ ใช้ smart_reply เป็นคน clean
         await smart_reply(message, reply)
 
         await store_chat(redis_instance, message.author.id, {
