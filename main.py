@@ -65,8 +65,9 @@ settings = Settings()
 
 CHANNEL_ID = [
     123456789012345678,  # เดิม
-    1409151929296224386  # อันใหม่
+    1409151929296224386,  # อันใหม่
 ]
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="$", intents=intents)
