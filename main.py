@@ -63,7 +63,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-CHANNEL_IDS = [
+CHANNEL_ID = [
     123456789012345678,  # เดิม
     1409151929296224386  # อันใหม่
 ]
